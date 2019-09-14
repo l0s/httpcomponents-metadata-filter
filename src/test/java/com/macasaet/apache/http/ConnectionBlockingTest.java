@@ -17,8 +17,6 @@ package com.macasaet.apache.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -72,17 +70,13 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.platform.commons.logging.Logger;
 import org.junit.platform.commons.logging.LoggerFactory;
 
-import fi.iki.elonen.NanoHTTPD;
-import fi.iki.elonen.NanoHTTPD.Response.Status;
-
 /**
  * This test emulates typical creation and usage of HttpClient
  * instances. It was initially used to demonstrate the full lifecyle of
  * an HTTP request in order to determine the best place to add the
  * filtering logic.
- * <p>
- * Copyright &copy; 2019 Carlos Macasaet.
- * </p>
+ *
+ * <p>Copyright &copy; 2019 Carlos Macasaet.</p>
  *
  * @author Carlos Macasaet
  */
@@ -92,21 +86,8 @@ public class ConnectionBlockingTest {
     private static final String shortUrlPath = "/Soh3hoot";
     private static final String shortUrl = "https://" + shortUrlHost + shortUrlPath;
     private static final int mockTargetPort = 8080;
-    private static final InetAddress defaultLinkLocalAddress;
 
     private final Logger logger = LoggerFactory.getLogger(getClass());
-
-    static {
-        InetAddress bannedLinkLocalAddress;
-        try {
-            bannedLinkLocalAddress = InetAddress
-                    .getByAddress(new byte[] { (byte) 169, (byte) 254, (byte) 169, (byte) 254 });
-        } catch (final UnknownHostException uhe) {
-            bannedLinkLocalAddress = null;
-            fail(uhe);
-        }
-        defaultLinkLocalAddress = bannedLinkLocalAddress;
-    }
 
     private CloseableHttpClient client;
 
@@ -202,7 +183,7 @@ public class ConnectionBlockingTest {
                 logger.debug(() -> "-- HttpRequestExecutor::preProcess exit: " + request);
             }
         }
-    
+
         public HttpResponse execute(final HttpRequest request, final HttpClientConnection conn,
                 final HttpContext context) throws IOException, HttpException {
             logger.debug(() -> "-- HttpRequestExecutor::execute enter: " + request);
@@ -212,7 +193,7 @@ public class ConnectionBlockingTest {
                 logger.debug(() -> "-- HttpRequestExecutor::execute exit: " + request);
             }
         }
-    
+
         public void postProcess(final HttpResponse response, final HttpProcessor processor, final HttpContext context)
                 throws HttpException, IOException {
             logger.debug(() -> "-- HttpRequestExecutor::postProcess enter: " + response);
@@ -236,7 +217,7 @@ public class ConnectionBlockingTest {
     // this implementation simulates a URL shortener
     private final RedirectStrategy redirectStrategy = new RedirectStrategy() {
         private final RedirectStrategy delegate = new DefaultRedirectStrategy();
-    
+
         public boolean isRedirected(final HttpRequest request, final HttpResponse response, final HttpContext context)
                 throws ProtocolException {
             logger.debug(() -> "-- RedirectStrategy::isRedirected enter: " + request);
@@ -249,7 +230,7 @@ public class ConnectionBlockingTest {
                 logger.debug(() -> "-- RedirectStrategy::isRedirected exit: " + request);
             }
         }
-    
+
         public HttpUriRequest getRedirect(final HttpRequest request, final HttpResponse response,
                 final HttpContext context) throws ProtocolException {
             logger.debug(() -> "-- RedirectStrategy::getRedirect enter: " + request);
@@ -273,17 +254,6 @@ public class ConnectionBlockingTest {
 //		}
 //	};
 
-    private final NanoHTTPD shortUrlServer = new NanoHTTPD("localhost", mockTargetPort) {
-        public Response serve(IHTTPSession session) {
-            if (session.getMethod().equals(Method.GET) && session.getUri().contentEquals("/valid")) {
-                return newFixedLengthResponse("hello");
-            }
-            final Response retval = newFixedLengthResponse(Status.REDIRECT, "text/plain", "");
-            retval.addHeader("Location", "http://169.254.169.254/latest/meta-data/");
-            return retval;
-        }
-    };
-
     @BeforeAll
     public static void setUpLogging() throws SecurityException, IOException {
         try (InputStream configurationStream = ConnectionBlockingTest.class
@@ -294,10 +264,6 @@ public class ConnectionBlockingTest {
 
     @BeforeEach
     public void setUp() throws IOException {
-        shortUrlServer.start();
-        assertTrue(shortUrlServer.wasStarted());
-        assertTrue(shortUrlServer.isAlive());
-
         final HttpClientBuilder builder = HttpClientBuilder.create();
         builder.setRoutePlanner(routePlanner);
         builder.addInterceptorFirst(firstRequestInterceptor);
@@ -319,11 +285,6 @@ public class ConnectionBlockingTest {
     @AfterEach
     public void tearDown() throws IOException {
         client.close();
-    }
-
-    @AfterEach
-    public void shutDownServer() {
-        shortUrlServer.stop();
     }
 
     @Test
