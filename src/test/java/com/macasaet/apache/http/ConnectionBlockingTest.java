@@ -163,9 +163,7 @@ public class ConnectionBlockingTest {
         public InetAddress[] resolve(final String host) throws UnknownHostException {
             logger.debug(() -> "-- DnsResolver::resolve enter: " + host);
             try {
-                if ("instance-data".contentEquals(host) || "metadata.google.internal".contentEquals(host)) {
-                    return new InetAddress[] { defaultLinkLocalAddress };
-                } else if (shortUrlHost.contentEquals(host)) {
+                if (shortUrlHost.contentEquals(host)) {
                     return new InetAddress[] { InetAddress.getByName("localhost") };
                 }
                 return delegate.resolve(host);
@@ -184,16 +182,6 @@ public class ConnectionBlockingTest {
         public ConnectionRequest requestConnection(final HttpRoute route, final Object state) {
             logger.debug(() -> "-- HttpClientConnectionManager::requestConnection: " + route + " ( "
                     + route.getTargetHost() + " )");
-            final HttpHost targetHost = route.getTargetHost();
-            if (defaultLinkLocalAddress.equals(targetHost.getAddress())) {
-                fail("Attempted to connected to link local address");
-            } else if (targetHost.getHostName().endsWith(".internal")) {
-                fail("Attempted to connected to internal host");
-            } else if (shortUrlHost.contentEquals(targetHost.getHostName())) {
-                final HttpHost target = new HttpHost("localhost", mockTargetPort);
-                final HttpRoute mockRoute = new HttpRoute(target);
-                return requestConnection(mockRoute, state);
-            }
             return super.requestConnection(route, state);
         }
     
@@ -201,21 +189,7 @@ public class ConnectionBlockingTest {
                 final HttpContext context) throws IOException {
             logger.debug(
                     () -> "-- HttpClientConnectionManager::connect: " + route + " ( " + route.getTargetHost() + " )");
-            final HttpHost targetHost = route.getTargetHost();
-            if (defaultLinkLocalAddress.equals(targetHost.getAddress())
-                    || "169.254.169.254".contentEquals(targetHost.getHostName())) {
-                fail("Attempted to connect to link local address");
-            } else if (targetHost.getHostName().endsWith(".internal")) {
-                fail("Attempted to connect to internal host");
-            } else if (shortUrlHost.contentEquals(targetHost.getHostName())) {
-                final HttpHost target = new HttpHost("localhost", mockTargetPort);
-                final HttpRoute mockRoute = new HttpRoute(target);
-                context.setAttribute("http.target_host", "http://localhost");
-                context.setAttribute("http.route", mockRoute);
-                connect(managedConn, mockRoute, connectTimeout, context);
-            } else {
-                super.connect(managedConn, route, connectTimeout, context);
-            }
+            super.connect(managedConn, route, connectTimeout, context);
         }
     };
     private final HttpRequestExecutor requestExecutor = new HttpRequestExecutor() {
@@ -233,13 +207,6 @@ public class ConnectionBlockingTest {
                 final HttpContext context) throws IOException, HttpException {
             logger.debug(() -> "-- HttpRequestExecutor::execute enter: " + request);
             try {
-                if (shortUrl.contentEquals(request.getRequestLine().getUri())) {
-                    final HttpHost target = new HttpHost("localhost", mockTargetPort);
-                    final HttpRoute mockRoute = new HttpRoute(target);
-                    context.setAttribute("http.target_host", "http://localhost");
-                    context.setAttribute("http.route", mockRoute);
-                    return execute(new HttpGet("http://localhost:" + mockTargetPort + shortUrlPath), conn, context);
-                }
                 return super.execute(request, conn, context);
             } finally {
                 logger.debug(() -> "-- HttpRequestExecutor::execute exit: " + request);
@@ -266,6 +233,7 @@ public class ConnectionBlockingTest {
             logger.debug(() -> "-- last response interceptor: " + response + ", " + context);
         }
     };
+    // this implementation simulates a URL shortener
     private final RedirectStrategy redirectStrategy = new RedirectStrategy() {
         private final RedirectStrategy delegate = new DefaultRedirectStrategy();
     
@@ -387,19 +355,6 @@ public class ConnectionBlockingTest {
         final ClientProtocolException result = assertThrows(ClientProtocolException.class, () -> client.execute(request));
         final HttpException cause = (HttpException)result.getCause();
         assertEquals("Blocked host.", cause.getMessage());
-    }
-
-//    @Test
-    public final void verifyClientCanConnectToValidHost() throws IOException {
-        // given
-        final HttpUriRequest request = new HttpGet("http://localhost:8080/valid");
-
-        // when
-        final HttpResponse response = client.execute(request);
-
-        // then
-        assertEquals(200, response.getStatusLine().getStatusCode());
-        logger.debug(() -> "valid response: " + response);
     }
 
     @ParameterizedTest
