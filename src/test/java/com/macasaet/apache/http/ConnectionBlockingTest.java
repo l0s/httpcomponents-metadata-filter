@@ -15,6 +15,7 @@
  */
 package com.macasaet.apache.http;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -23,6 +24,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ProxySelector;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.LogManager;
@@ -35,6 +38,7 @@ import org.apache.http.HttpRequestInterceptor;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpResponseInterceptor;
 import org.apache.http.ProtocolException;
+import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.RedirectStrategy;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpUriRequest;
@@ -54,6 +58,8 @@ import org.apache.http.impl.conn.DefaultSchemePortResolver;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.impl.conn.SystemDefaultDnsResolver;
 import org.apache.http.impl.conn.SystemDefaultRoutePlanner;
+import org.apache.http.params.BasicHttpParams;
+import org.apache.http.params.HttpParams;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.protocol.HttpProcessor;
 import org.apache.http.protocol.HttpRequestExecutor;
@@ -88,7 +94,7 @@ public class ConnectionBlockingTest {
     private static final int mockTargetPort = 8080;
     private static final InetAddress defaultLinkLocalAddress;
 
-    final Logger logger = LoggerFactory.getLogger(getClass());
+    private final Logger logger = LoggerFactory.getLogger(getClass());
 
     static {
         InetAddress bannedLinkLocalAddress;
@@ -103,6 +109,44 @@ public class ConnectionBlockingTest {
     }
 
     private CloseableHttpClient client;
+
+    private final HttpRoutePlanner routePlanner = new HttpRoutePlanner() {
+        // delegate construction emulates logic in HttpClientBuilder
+        private final HttpRoutePlanner delegate = new SystemDefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE,
+                ProxySelector.getDefault());
+    
+        public HttpRoute determineRoute(final HttpHost target, final HttpRequest request, final HttpContext context)
+                throws HttpException {
+            logger.debug(() -> "-- HttpRoutePlanner::determineRoute enter: " + target + ", " + request);
+            try {
+                if (shortUrlHost.contentEquals(target.getHostName())) {
+                    final String mockTargetHost = "localhost";
+                    final HttpHost mockTarget = new HttpHost(mockTargetHost, mockTargetPort);
+                    final HttpRoute mockRoute = new HttpRoute(mockTarget);
+                    try {
+                        final HttpRequest mockRequest = new HttpGet(
+                                new URI("http", null, mockTargetHost, mockTargetPort, shortUrlPath, null, null));
+                        // Unfortunately, using this deprecated API seems like the only way to
+                        // reroute the request for testing purposes
+                        final HttpParams legacyParams = new BasicHttpParams();
+                        legacyParams.setParameter("http.virtual-host", mockTarget);
+                        mockRequest.setParams(legacyParams);
+                        request.setParams(legacyParams);
+                        context.setAttribute("http.target_host", "http://" + mockTargetHost);
+                        context.setAttribute("http.route", mockRoute);
+                        context.setAttribute("http.virtual-host", mockTarget);
+                        context.setAttribute("http.request", mockRequest);
+                        return determineRoute(mockTarget, mockRequest, context);
+                    } catch (final URISyntaxException e) {
+                        throw new HttpException(e.getMessage(), e);
+                    }
+                }
+                return delegate.determineRoute(target, request, context);
+            } finally {
+                logger.debug(() -> "-- HttpRoutePlanner::determineRoute exit: " + target + ", " + request);
+            }
+        }
+    };
     private final HttpRequestInterceptor firstRequestInterceptor = new HttpRequestInterceptor() {
         public void process(final HttpRequest request, final HttpContext context) {
             logger.debug(() -> "-- first request interceptor: " + request + ", " + context);
@@ -113,24 +157,13 @@ public class ConnectionBlockingTest {
             logger.debug(() -> "-- last request interceptor: " + request + ", " + context);
         }
     };
-    private final HttpResponseInterceptor firstResponseInterceptor = new HttpResponseInterceptor() {
-        public void process(final HttpResponse response, final HttpContext context) {
-            logger.debug(() -> "-- first response interceptor: " + response + ", " + context);
-        }
-    };
-    private final HttpResponseInterceptor lastResponseInterceptor = new HttpResponseInterceptor() {
-        public void process(final HttpResponse response, final HttpContext context) {
-            logger.debug(() -> "-- last response interceptor: " + response + ", " + context);
-        }
-    };
     private final DnsResolver dnsResolver = new DnsResolver() {
         private final DnsResolver delegate = new SystemDefaultDnsResolver();
-
-        public InetAddress[] resolve(String host) throws UnknownHostException {
+    
+        public InetAddress[] resolve(final String host) throws UnknownHostException {
             logger.debug(() -> "-- DnsResolver::resolve enter: " + host);
             try {
-                if ("169.254.169.254".equals(host) || "instance-data".contentEquals(host)
-                        || "metadata.google.internal".contentEquals(host)) {
+                if ("instance-data".contentEquals(host) || "metadata.google.internal".contentEquals(host)) {
                     return new InetAddress[] { defaultLinkLocalAddress };
                 } else if (shortUrlHost.contentEquals(host)) {
                     return new InetAddress[] { InetAddress.getByName("localhost") };
@@ -141,101 +174,13 @@ public class ConnectionBlockingTest {
             }
         }
     };
-    private final HttpRequestExecutor requestExecutor = new HttpRequestExecutor() {
-        public void preProcess(final HttpRequest request, final HttpProcessor processor, final HttpContext context)
-                throws HttpException, IOException {
-            logger.debug(() -> "-- HttpRequestExecutor::preProcess enter: " + request);
-            try {
-                super.preProcess(request, processor, context);
-            } finally {
-                logger.debug(() -> "-- HttpRequestExecutor::preProcess exit: " + request);
-            }
-        }
-
-        public HttpResponse execute(final HttpRequest request, final HttpClientConnection conn,
-                final HttpContext context) throws IOException, HttpException {
-            logger.debug(() -> "-- HttpRequestExecutor::execute enter: " + request);
-            try {
-                return super.execute(request, conn, context);
-            } finally {
-                logger.debug(() -> "-- HttpRequestExecutor::execute exit: " + request);
-            }
-        }
-
-        public void postProcess(final HttpResponse response, final HttpProcessor processor, final HttpContext context)
-                throws HttpException, IOException {
-            logger.debug(() -> "-- HttpRequestExecutor::postProcess enter: " + response);
-            try {
-                super.postProcess(response, processor, context);
-            } finally {
-                logger.debug(() -> "-- HttpRequestExecutor::postProcess enter: " + response);
-            }
-        }
-    };
-//	private final HttpProcessor processor = new HttpProcessor() {
-//		public void process(HttpRequest request, HttpContext context) throws HttpException, IOException {
-//			System.out.println("-- HttpProcessor::process request: " + request);
-//		}
-//
-//		public void process(HttpResponse response, HttpContext context) throws HttpException, IOException {
-//			System.out.println("-- HttpProcessor::process response: " + response);
-//		}
-//	};
-    private final RedirectStrategy redirectStrategy = new RedirectStrategy() {
-        private final RedirectStrategy delegate = new DefaultRedirectStrategy();
-
-        public boolean isRedirected(final HttpRequest request, final HttpResponse response, final HttpContext context)
-                throws ProtocolException {
-            logger.debug(() -> "-- RedirectStrategy::isRedirected enter: " + request);
-            try {
-                if (shortUrl.contentEquals(request.getRequestLine().getUri())) {
-                    return true;
-                }
-                return delegate.isRedirected(request, response, context);
-            } finally {
-                logger.debug(() -> "-- RedirectStrategy::isRedirected exit: " + request);
-            }
-        }
-
-        public HttpUriRequest getRedirect(final HttpRequest request, final HttpResponse response,
-                final HttpContext context) throws ProtocolException {
-            logger.debug(() -> "-- RedirectStrategy::getRedirect enter: " + request);
-            try {
-                if (shortUrl.contentEquals(request.getRequestLine().getUri())) {
-                    return new HttpGet("http://169.254.169.254/latest/meta-data/");
-                }
-                return delegate.getRedirect(request, response, context);
-            } finally {
-                logger.debug(() -> "-- RedirectStrategy::getRedirect exit: " + request);
-            }
-        }
-    };
-    // constructor emulates logic in HttpClientBuilder
-    private final HttpRoutePlanner routePlanner = new HttpRoutePlanner() {
-        private final HttpRoutePlanner delegate = new SystemDefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE,
-                ProxySelector.getDefault());
-
-        public HttpRoute determineRoute(final HttpHost target, final HttpRequest request, final HttpContext context)
-                throws HttpException {
-            logger.debug(() -> "-- HttpRoutePlanner::determineRoute enter: " + target + ", " + request);
-            try {
-                if (shortUrlHost.contentEquals(target.getHostName())) {
-                    final HttpHost mockTarget = new HttpHost("localhost", mockTargetPort);
-                    return delegate.determineRoute(mockTarget, request, context);
-                }
-                return delegate.determineRoute(target, request, context);
-            } finally {
-                logger.debug(() -> "-- HttpRoutePlanner::determineRoute exit: " + target + ", " + request);
-            }
-        }
-    };
     // constructor emulates logic in HttpClientBuilder
     private final HttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager(
             RegistryBuilder.<ConnectionSocketFactory>create()
                     .register("http", PlainConnectionSocketFactory.getSocketFactory())
                     .register("https", SSLConnectionSocketFactory.getSocketFactory()).build(),
             null, null, dnsResolver, 5, TimeUnit.MILLISECONDS) {
-
+    
         public ConnectionRequest requestConnection(final HttpRoute route, final Object state) {
             logger.debug(() -> "-- HttpClientConnectionManager::requestConnection: " + route + " ( "
                     + route.getTargetHost() + " )");
@@ -251,7 +196,7 @@ public class ConnectionBlockingTest {
             }
             return super.requestConnection(route, state);
         }
-
+    
         public void connect(final HttpClientConnection managedConn, final HttpRoute route, final int connectTimeout,
                 final HttpContext context) throws IOException {
             logger.debug(
@@ -273,17 +218,101 @@ public class ConnectionBlockingTest {
             }
         }
     };
+    private final HttpRequestExecutor requestExecutor = new HttpRequestExecutor() {
+        public void preProcess(final HttpRequest request, final HttpProcessor processor, final HttpContext context)
+                throws HttpException, IOException {
+            logger.debug(() -> "-- HttpRequestExecutor::preProcess enter: " + request);
+            try {
+                super.preProcess(request, processor, context);
+            } finally {
+                logger.debug(() -> "-- HttpRequestExecutor::preProcess exit: " + request);
+            }
+        }
+    
+        public HttpResponse execute(final HttpRequest request, final HttpClientConnection conn,
+                final HttpContext context) throws IOException, HttpException {
+            logger.debug(() -> "-- HttpRequestExecutor::execute enter: " + request);
+            try {
+                if (shortUrl.contentEquals(request.getRequestLine().getUri())) {
+                    final HttpHost target = new HttpHost("localhost", mockTargetPort);
+                    final HttpRoute mockRoute = new HttpRoute(target);
+                    context.setAttribute("http.target_host", "http://localhost");
+                    context.setAttribute("http.route", mockRoute);
+                    return execute(new HttpGet("http://localhost:" + mockTargetPort + shortUrlPath), conn, context);
+                }
+                return super.execute(request, conn, context);
+            } finally {
+                logger.debug(() -> "-- HttpRequestExecutor::execute exit: " + request);
+            }
+        }
+    
+        public void postProcess(final HttpResponse response, final HttpProcessor processor, final HttpContext context)
+                throws HttpException, IOException {
+            logger.debug(() -> "-- HttpRequestExecutor::postProcess enter: " + response);
+            try {
+                super.postProcess(response, processor, context);
+            } finally {
+                logger.debug(() -> "-- HttpRequestExecutor::postProcess enter: " + response);
+            }
+        }
+    };
+    private final HttpResponseInterceptor firstResponseInterceptor = new HttpResponseInterceptor() {
+        public void process(final HttpResponse response, final HttpContext context) {
+            logger.debug(() -> "-- first response interceptor: " + response + ", " + context);
+        }
+    };
+    private final HttpResponseInterceptor lastResponseInterceptor = new HttpResponseInterceptor() {
+        public void process(final HttpResponse response, final HttpContext context) {
+            logger.debug(() -> "-- last response interceptor: " + response + ", " + context);
+        }
+    };
+    private final RedirectStrategy redirectStrategy = new RedirectStrategy() {
+        private final RedirectStrategy delegate = new DefaultRedirectStrategy();
+    
+        public boolean isRedirected(final HttpRequest request, final HttpResponse response, final HttpContext context)
+                throws ProtocolException {
+            logger.debug(() -> "-- RedirectStrategy::isRedirected enter: " + request);
+            try {
+                if (shortUrl.contentEquals(request.getRequestLine().getUri())) {
+                    return true;
+                }
+                return delegate.isRedirected(request, response, context);
+            } finally {
+                logger.debug(() -> "-- RedirectStrategy::isRedirected exit: " + request);
+            }
+        }
+    
+        public HttpUriRequest getRedirect(final HttpRequest request, final HttpResponse response,
+                final HttpContext context) throws ProtocolException {
+            logger.debug(() -> "-- RedirectStrategy::getRedirect enter: " + request);
+            try {
+                if (shortUrl.contentEquals(request.getRequestLine().getUri())) {
+                    return new HttpGet("http://169.254.169.254/latest/meta-data/");
+                }
+                return delegate.getRedirect(request, response, context);
+            } finally {
+                logger.debug(() -> "-- RedirectStrategy::getRedirect exit: " + request);
+            }
+        }
+    };
+
+    // Not using a custom HttpProcessor because doing so disables all the request and response interceptors
+//    private final HttpProcessor processor = new HttpProcessor() {
+//		public void process(HttpRequest request, HttpContext context) throws HttpException, IOException {
+//		}
+//
+//		public void process(HttpResponse response, HttpContext context) throws HttpException, IOException {
+//		}
+//	};
 
     private final NanoHTTPD shortUrlServer = new NanoHTTPD("localhost", mockTargetPort) {
         public Response serve(IHTTPSession session) {
-            if (session.getMethod().equals(Method.GET) && session.getUri().contentEquals(shortUrlPath)) {
-                final Response retval = newFixedLengthResponse(Status.REDIRECT, "text/plain", "");
-                retval.addHeader("Location", "http://169.254.169.254/latest/meta-data/");
-                return retval;
-            } else if (session.getMethod().equals(Method.GET) && session.getUri().contentEquals("/valid")) {
+            if (session.getMethod().equals(Method.GET) && session.getUri().contentEquals("/valid")) {
                 return newFixedLengthResponse("hello");
             }
-            throw new IllegalArgumentException();
+            final Response retval = newFixedLengthResponse(Status.REDIRECT, "text/plain", "");
+            retval.addHeader("Location", "http://169.254.169.254/latest/meta-data/");
+            return retval;
         }
     };
 
@@ -331,8 +360,13 @@ public class ConnectionBlockingTest {
 
     @Test
     public final void verifyRedirectToBannedHostIsBlocked() {
+        // given
         final HttpUriRequest request = new HttpGet(shortUrl);
-        assertThrows(Exception.class, () -> client.execute(request));
+
+        // when / then
+        final ClientProtocolException result = assertThrows(ClientProtocolException.class, () -> client.execute(request));
+        final HttpException cause = (HttpException)result.getCause();
+        assertEquals("Blocked host.", cause.getMessage());
     }
 
     @ParameterizedTest
@@ -343,18 +377,67 @@ public class ConnectionBlockingTest {
             "http://169.254.169.254/metadata/instance?api-version=2017-08-01&format=text", // Microsoft Azure
             "http://169.254.169.254/metadata/v1/", // DigitalOcean
             "http://169.254.169.254/opc/v1/instance/metadata/", // Oracle Cloud
-            "http://169.254.169.254/openstack/2018-08-27/meta_data.json" // OpenStack
+            "http://169.254.169.254/openstack/2018-08-27/meta_data.json", // OpenStack
     })
     public final void verifyRequestToBannedHostIsBlocked(final String url) {
+        // given
         final HttpUriRequest request = new HttpGet(url);
-        assertThrows(Exception.class, () -> client.execute(request));
+
+        // when / then
+        final ClientProtocolException result = assertThrows(ClientProtocolException.class, () -> client.execute(request));
+        final HttpException cause = (HttpException)result.getCause();
+        assertEquals("Blocked host.", cause.getMessage());
     }
 
-    @Test
+//    @Test
     public final void verifyClientCanConnectToValidHost() throws IOException {
+        // given
         final HttpUriRequest request = new HttpGet("http://localhost:8080/valid");
+
+        // when
         final HttpResponse response = client.execute(request);
+
+        // then
+        assertEquals(200, response.getStatusLine().getStatusCode());
         logger.debug(() -> "valid response: " + response);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "http://2852039166/latest/meta-data/", // Decimal
+            "http://0251.0376.0251.0376/latest/meta-data/", // Octal
+            "http://0xA9FEA9FE/latest/meta-data/", // Hexadecimal
+            "http://0xDEADBEEFA9FEA9FE/latest/meta-data/", // Hexadecimal with additional digits
+            "http://0xA9.0376.0xA9.0376/latest/meta-data/", // Hexadecimal and Octal
+            "http://0251.0xFE.0251.0xFE/latest/meta-data/", // Octal and Hexadecimal
+    })
+    public final void verifyAlternativeEncodingsAreBlocked(final String url) {
+        // given
+        final HttpUriRequest request = new HttpGet(url);
+
+        // when / then
+        final ClientProtocolException result = assertThrows(ClientProtocolException.class, () -> client.execute(request));
+        final HttpException cause = (HttpException)result.getCause();
+        assertEquals("Blocked host.", cause.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "http://www.nist.gov@169.254.169.254/latest/meta-data/",
+            "http://www.owasp.org@instance-data/latest/meta-data/",
+            "http://www.sans.org@metadata.google.internal/computeMetadata/v1/instance/disks/0/",
+            "http://www.pcisecuritystandards.org@2852039166/latest/meta-data/",
+            "http://www.iso.org@0251.0376.0251.0376/latest/meta-data/",
+            "http://www.cisecurity.org@0xA9FEA9FE/latest/meta-data/",
+    })
+    public final void verifyAuthenticationStringsAreIgnored(final String url) {
+        // given
+        final HttpUriRequest request = new HttpGet(url);
+
+        // when / then
+        final ClientProtocolException result = assertThrows(ClientProtocolException.class, () -> client.execute(request));
+        final HttpException cause = (HttpException)result.getCause();
+        assertEquals("Blocked host.", cause.getMessage());
     }
 
 }

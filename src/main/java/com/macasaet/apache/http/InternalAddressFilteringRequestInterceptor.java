@@ -94,7 +94,8 @@ public class InternalAddressFilteringRequestInterceptor implements HttpRequestIn
         final InetAddress[] addresses = explicitAddress != null ? new InetAddress[] { explicitAddress }
                 : getAllByName(hostName);
         for (final InetAddress address : addresses) {
-            if (address.isLinkLocalAddress()) {
+            if (address.isLinkLocalAddress() || address.isAnyLocalAddress() || address.isLoopbackAddress()
+                    || address.isSiteLocalAddress()) {
                 log.warn("Blocking connection to: " + host);
                 throw new HttpException("Blocked host.");
             }
