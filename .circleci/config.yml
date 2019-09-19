@@ -5,6 +5,12 @@ jobs:
       - image: circleci/openjdk:11.0.4-jdk-stretch
     steps:
       - checkout
+      - restore_cache:
+          key: v1-cache-{{ .Environment.CIRCLE_SHA1 }}
       - run:
           name: build
           command: mvn clean install
+      - save_cache:
+          key: v1-cache-{{ .Environment.CIRCLE_SHA1 }}
+          paths:
+            - ~/.m2/repository
