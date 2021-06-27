@@ -1,5 +1,7 @@
 # Apache HTTP Components Metadata Filter
 
+[![Continuous Integration](https://github.com/l0s/httpcomponents-metadata-filter/actions/workflows/ci.yml/badge.svg)](https://github.com/l0s/httpcomponents-metadata-filter/actions/workflows/ci.yml)
+
 This is a plugin to the Apache HTTP Client (4.x) that blocks access to
 internal metadata APIs for most popular cloud environments. This is
 meant to help prevent against a class of server-side request forgery
