@@ -56,8 +56,6 @@ import org.apache.http.impl.conn.DefaultSchemePortResolver;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.impl.conn.SystemDefaultDnsResolver;
 import org.apache.http.impl.conn.SystemDefaultRoutePlanner;
-import org.apache.http.params.BasicHttpParams;
-import org.apache.http.params.HttpParams;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.protocol.HttpProcessor;
 import org.apache.http.protocol.HttpRequestExecutor;
@@ -95,7 +93,8 @@ public class ConnectionBlockingTest {
         // delegate construction emulates logic in HttpClientBuilder
         private final HttpRoutePlanner delegate = new SystemDefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE,
                 ProxySelector.getDefault());
-    
+
+        @SuppressWarnings("deprecation")
         public HttpRoute determineRoute(final HttpHost target, final HttpRequest request, final HttpContext context)
                 throws HttpException {
             logger.debug(() -> "-- HttpRoutePlanner::determineRoute enter: " + target + ", " + request);
@@ -109,7 +108,7 @@ public class ConnectionBlockingTest {
                                 new URI("http", null, mockTargetHost, mockTargetPort, shortUrlPath, null, null));
                         // Unfortunately, using this deprecated API seems like the only way to
                         // reroute the request for testing purposes
-                        final HttpParams legacyParams = new BasicHttpParams();
+                        final org.apache.http.params.HttpParams legacyParams = new org.apache.http.params.BasicHttpParams();
                         legacyParams.setParameter("http.virtual-host", mockTarget);
                         mockRequest.setParams(legacyParams);
                         request.setParams(legacyParams);
@@ -128,19 +127,11 @@ public class ConnectionBlockingTest {
             }
         }
     };
-    private final HttpRequestInterceptor firstRequestInterceptor = new HttpRequestInterceptor() {
-        public void process(final HttpRequest request, final HttpContext context) {
-            logger.debug(() -> "-- first request interceptor: " + request + ", " + context);
-        }
-    };
-    private final HttpRequestInterceptor lastRequestInterceptor = new HttpRequestInterceptor() {
-        public void process(final HttpRequest request, final HttpContext context) {
-            logger.debug(() -> "-- last request interceptor: " + request + ", " + context);
-        }
-    };
+    private final HttpRequestInterceptor firstRequestInterceptor = (request, context) -> logger.debug(() -> "-- first request interceptor: " + request + ", " + context);
+    private final HttpRequestInterceptor lastRequestInterceptor = (request, context) -> logger.debug(() -> "-- last request interceptor: " + request + ", " + context);
     private final DnsResolver dnsResolver = new DnsResolver() {
         private final DnsResolver delegate = new SystemDefaultDnsResolver();
-    
+
         public InetAddress[] resolve(final String host) throws UnknownHostException {
             logger.debug(() -> "-- DnsResolver::resolve enter: " + host);
             try {
@@ -204,16 +195,8 @@ public class ConnectionBlockingTest {
             }
         }
     };
-    private final HttpResponseInterceptor firstResponseInterceptor = new HttpResponseInterceptor() {
-        public void process(final HttpResponse response, final HttpContext context) {
-            logger.debug(() -> "-- first response interceptor: " + response + ", " + context);
-        }
-    };
-    private final HttpResponseInterceptor lastResponseInterceptor = new HttpResponseInterceptor() {
-        public void process(final HttpResponse response, final HttpContext context) {
-            logger.debug(() -> "-- last response interceptor: " + response + ", " + context);
-        }
-    };
+    private final HttpResponseInterceptor firstResponseInterceptor = (response, context) -> logger.debug(() -> "-- first response interceptor: " + response + ", " + context);
+    private final HttpResponseInterceptor lastResponseInterceptor = (response, context) -> logger.debug(() -> "-- last response interceptor: " + response + ", " + context);
     // this implementation simulates a URL shortener
     private final RedirectStrategy redirectStrategy = new RedirectStrategy() {
         private final RedirectStrategy delegate = new DefaultRedirectStrategy();
@@ -263,7 +246,7 @@ public class ConnectionBlockingTest {
     }
 
     @BeforeEach
-    public void setUp() throws IOException {
+    public void setUp() {
         final HttpClientBuilder builder = HttpClientBuilder.create();
         builder.setRoutePlanner(routePlanner);
         builder.addInterceptorFirst(firstRequestInterceptor);
