@@ -24,6 +24,7 @@ import static org.apache.http.protocol.HttpCoreContext.HTTP_TARGET_HOST;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -56,8 +57,7 @@ public class InternalAddressFilteringRequestInterceptor implements HttpRequestIn
 
     private static final List<String> blockedHosts = unmodifiableList(
             asList("instance-data", "metadata.google.internal"));
-    // TODO add ability to blacklist and whitelist hosts with properties
-    // file
+    // TODO add ability to block or allow hosts based on a properties file
 
     private final Log log = LogFactory.getLog(getClass());
 
@@ -87,7 +87,7 @@ public class InternalAddressFilteringRequestInterceptor implements HttpRequestIn
         final String hostName = host.getHostName();
         if (blockedHosts.stream().anyMatch(
                 blockedHost -> blockedHost.equalsIgnoreCase(hostName)
-                || hostName.toLowerCase().endsWith("." + blockedHost))) {
+                || hostName.toLowerCase(Locale.ENGLISH).endsWith("." + blockedHost))) {
             log.warn("Blocking connection to: " + host);
             throw new HttpException("Blocked host.");
         }
