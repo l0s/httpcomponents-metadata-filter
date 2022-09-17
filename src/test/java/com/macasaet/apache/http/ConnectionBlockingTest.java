@@ -25,8 +25,10 @@ import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.UnknownHostException;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.LogManager;
+import java.util.stream.Stream;
 
 import org.apache.http.HttpClientConnection;
 import org.apache.http.HttpException;
@@ -63,14 +65,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.ArgumentsProvider;
+import org.junit.jupiter.params.provider.ArgumentsSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.platform.commons.logging.Logger;
 import org.junit.platform.commons.logging.LoggerFactory;
 
 /**
  * This test emulates typical creation and usage of HttpClient
- * instances. It was initially used to demonstrate the full lifecyle of
+ * instances. It was initially used to demonstrate the full lifecycle of
  * an HTTP request in order to determine the best place to add the
  * filtering logic.
  *
@@ -84,6 +90,7 @@ public class ConnectionBlockingTest {
     private static final String shortUrlPath = "/Soh3hoot";
     private static final String shortUrl = "https://" + shortUrlHost + shortUrlPath;
     private static final int mockTargetPort = 8080;
+    private static final String osString = System.getProperty("os.name", "generic").toLowerCase(Locale.ENGLISH);
 
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -281,6 +288,11 @@ public class ConnectionBlockingTest {
         assertEquals("Blocked host.", cause.getMessage());
     }
 
+    /**
+     * Ensure that requests to known metadata APIs are blocked
+     *
+     * @param url a URL for a cloud provider's metadata API
+     */
     @ParameterizedTest
     @ValueSource(strings = {
             "http://169.254.169.254/latest/meta-data/", // Amazon Web Services (AWS)
@@ -301,15 +313,13 @@ public class ConnectionBlockingTest {
         assertEquals("Blocked host.", cause.getMessage());
     }
 
+    /**
+     * Ensure that attempts to circumvent block lists using alternative IP address encodings are still blocked.
+     *
+     * @param url a URL that specifies a banned host IP address using a non-typical encoding
+     */
     @ParameterizedTest
-    @ValueSource(strings = {
-            "http://2852039166/latest/meta-data/", // Decimal
-            "http://0251.0376.0251.0376/latest/meta-data/", // Octal
-            "http://0xA9FEA9FE/latest/meta-data/", // Hexadecimal
-            // "http://0xDEADBEEFA9FEA9FE/latest/meta-data/", // Hexadecimal with additional digits, doesn't work on Linux
-            "http://0xA9.0376.0xA9.0376/latest/meta-data/", // Hexadecimal and Octal
-            "http://0251.0xFE.0251.0xFE/latest/meta-data/", // Octal and Hexadecimal
-    })
+    @ArgumentsSource(AlternativeEncodingsProvider.class)
     public final void verifyAlternativeEncodingsAreBlocked(final String url) {
         // given
         final HttpUriRequest request = new HttpGet(url);
@@ -320,15 +330,31 @@ public class ConnectionBlockingTest {
         assertEquals("Blocked host.", cause.getMessage());
     }
 
+    protected static class AlternativeEncodingsProvider implements ArgumentsProvider {
+        public Stream<? extends Arguments> provideArguments(final ExtensionContext ignored) {
+            final Stream.Builder<Arguments> builder = Stream.builder();
+            if(!osString.contains("nux")) {
+                // not Linux
+                // these will fail on Linux with `java.net.UnknownHostException`
+                builder.accept(Arguments.of("http://0251.0376.0251.0376/latest/meta-data/")); // Octal
+                builder.accept(Arguments.of("http://0xA9FEA9FE/latest/meta-data/")); // Hexadecimal
+                builder.accept(Arguments.of("http://0xDEADBEEFA9FEA9FE/latest/meta-data/")); // // Hexadecimal with additional digits
+                builder.accept(Arguments.of("http://0xA9.0376.0xA9.0376/latest/meta-data/")); // Hexadecimal and Octal
+                builder.accept(Arguments.of("http://0251.0xFE.0251.0xFE/latest/meta-data/")); // Octal and Hexadecimal
+            }
+            builder.accept(Arguments.of("http://2852039166/latest/meta-data/")); // Decimal
+            return builder.build();
+        }
+    }
+
+    /**
+     * Ensure that attempts to trick pattern matchers by embedding a host in the authentication portion of a URL are not
+     * successful.
+     *
+     * @param url a URL with a prohibited host and a valid-looking domain in the authentication section of a URL
+     */
     @ParameterizedTest
-    @ValueSource(strings = {
-            "http://www.nist.gov@169.254.169.254/latest/meta-data/",
-            "http://www.owasp.org@instance-data/latest/meta-data/",
-            "http://www.sans.org@metadata.google.internal/computeMetadata/v1/instance/disks/0/",
-            "http://www.pcisecuritystandards.org@2852039166/latest/meta-data/",
-            "http://www.iso.org@0251.0376.0251.0376/latest/meta-data/",
-            "http://www.cisecurity.org@0xA9FEA9FE/latest/meta-data/",
-    })
+    @ArgumentsSource(AuthenticationStringsProvider.class)
     public final void verifyAuthenticationStringsAreIgnored(final String url) {
         // given
         final HttpUriRequest request = new HttpGet(url);
@@ -339,4 +365,20 @@ public class ConnectionBlockingTest {
         assertEquals("Blocked host.", cause.getMessage());
     }
 
+    protected static class AuthenticationStringsProvider implements ArgumentsProvider {
+        public Stream<? extends Arguments> provideArguments(final ExtensionContext ignored) {
+            final Stream.Builder<Arguments> builder = Stream.builder();
+            if(!osString.contains("nux")) {
+                // not Linux
+                // these will fail on Linux with `java.net.UnknownHostException`
+                builder.accept(Arguments.of("http://www.iso.org@0251.0376.0251.0376/latest/meta-data/"));
+                builder.accept(Arguments.of("http://www.cisecurity.org@0xA9FEA9FE/latest/meta-data/"));
+            }
+            builder.accept(Arguments.of("http://www.nist.gov@169.254.169.254/latest/meta-data/"));
+            builder.accept(Arguments.of("http://www.owasp.org@instance-data/latest/meta-data/"));
+            builder.accept(Arguments.of("http://www.sans.org@metadata.google.internal/computeMetadata/v1/instance/disks/0/"));
+            builder.accept(Arguments.of("http://www.pcisecuritystandards.org@2852039166/latest/meta-data/"));
+            return builder.build();
+        }
+    }
 }
